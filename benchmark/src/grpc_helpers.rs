@@ -24,7 +24,7 @@ use types::{
     get_with_proof::{RequestItem, ResponseItem, UpdateToLatestLedgerRequest},
 };
 
-use crate::OP_COUNTER;
+use crate::{submit_pattern::ConstantRate, OP_COUNTER};
 
 /// Timeout duration for grpc call option.
 const GRPC_TIMEOUT_MS: u64 = 8_000;
@@ -87,26 +87,31 @@ fn check_ac_response(resp: &ProtoSubmitTransactionResponse) -> bool {
     }
 }
 
-/// Send TXN requests to AC async, wait for and check the responses from AC.
-/// Return the responses of only accepted TXN requests.
+/// Send TXN requests using specified pattern to AC async, wait for and check the responses.
+/// Return only the responses of accepted TXN requests.
 /// Ignore but count both gRPC-failed submissions and AC-rejected TXNs.
 pub fn submit_and_wait_txn_requests(
     client: &AdmissionControlClient,
-    txn_requests: &[SubmitTransactionRequest],
+    txn_requests: Vec<SubmitTransactionRequest>,
+    submit_rate: u64,
 ) -> Vec<ProtoSubmitTransactionResponse> {
-    let futures: Vec<_> = txn_requests
-        .iter()
-        .filter_map(|req| {
-            match client.submit_transaction_async_opt(&req, get_default_grpc_call_option()) {
-                Ok(future) => Some(future),
-                Err(e) => {
-                    OP_COUNTER.inc(&format!("submit_txns.{:?}", e));
-                    error!("Failed to send gRPC request: {:?}", e);
-                    None
-                }
+    let mut futures = vec![];
+    let mut pattern = ConstantRate::new(submit_rate, txn_requests.into_iter());
+    while let Some(req) = pattern.next() {
+        let now = time::Instant::now();
+        match client.submit_transaction_async_opt(&req, get_default_grpc_call_option()) {
+            Ok(future) => {
+                futures.push(future);
             }
-        })
-        .collect();
+            Err(e) => {
+                OP_COUNTER.inc(&format!("submit_txns.{:?}", e));
+                error!("Failed to send gRPC request: {:?}", e);
+            }
+        }
+        // Exclude submission duration from pattern's sleep duration.
+        pattern.set_exclude_duration_us(now.elapsed().as_micros() as u64);
+        OP_COUNTER.inc("submit_txns");
+    }
     // Wait all the futures unorderedly, then pick only accepted responses.
     stream::futures_unordered(futures)
         .wait()

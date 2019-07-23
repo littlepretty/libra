@@ -19,6 +19,7 @@ use types::{account_address::AccountAddress, account_config::association_address
 
 pub mod grpc_helpers;
 pub mod ruben_opt;
+pub mod submit_pattern;
 pub mod txn_generator;
 
 use grpc_helpers::{
@@ -55,11 +56,17 @@ pub struct Benchmarker {
     /// Persisted sequence numbers for generated accounts and faucet account
     /// BEFORE playing new round of TXNs.
     prev_sequence_numbers: HashMap<AccountAddress, u64>,
+    /// Submit TXNs with specified rate. Minting opearation always floods TXNs.
+    submit_rate: u64,
 }
 
 impl Benchmarker {
     /// Construct Benchmarker with a vector of AC clients and a NodeDebugClient.
-    pub fn new(clients: Vec<AdmissionControlClient>, stagger_range_ms: u16) -> Self {
+    pub fn new(
+        clients: Vec<AdmissionControlClient>,
+        stagger_range_ms: u16,
+        submit_rate: u64,
+    ) -> Self {
         if clients.is_empty() {
             panic!("failed to create benchmarker without any AdmissionControlClient");
         }
@@ -69,6 +76,7 @@ impl Benchmarker {
             clients: arc_clients,
             stagger_range_ms,
             prev_sequence_numbers,
+            submit_rate,
         }
     }
 
@@ -121,8 +129,11 @@ impl Benchmarker {
         // Disable client staggering for mint operations.
         let stagger_range_ms = self.stagger_range_ms;
         self.stagger_range_ms = 1;
-        let (num_accepted, num_committed, _, _) =
-            self.submit_and_wait_txn_committed(&mint_requests, &mut [faucet_account]);
+        let (num_accepted, num_committed, _, _) = self.submit_and_wait_txn_committed(
+            &mint_requests,
+            &mut [faucet_account],
+            Some(std::u64::MAX), /* Flood minting TXNs. */
+        );
         self.stagger_range_ms = stagger_range_ms;
         // We stop immediately if any minting fails.
         if num_accepted != mint_requests.len() || num_accepted - num_committed > 0 {
@@ -151,7 +162,11 @@ impl Benchmarker {
 
     /// Send requests to AC async, wait for responses from AC.
     /// Return #accepted TXNs and submission duration.
-    pub fn submit_txns(&mut self, txn_reqs: &[SubmitTransactionRequest]) -> (usize, u128) {
+    pub fn submit_txns(
+        &mut self,
+        txn_reqs: &[SubmitTransactionRequest],
+        submit_rate: u64,
+    ) -> (usize, u128) {
         let txn_req_chunks = divide_items(txn_reqs, self.clients.len());
         let now = time::Instant::now();
         // Zip txn_req_chunks with clients: when first iter returns none,
@@ -169,11 +184,14 @@ impl Benchmarker {
                     move || -> (Vec<ProtoSubmitTransactionResponse>, u16) {
                         let delay_duration_ms = Self::stagger_client(stagger_range_ms);
                         info!(
-                            "Dispatch a chunk of {} requests to client and start to submit after staggered {} ms.",
+                            "Dispatch {} requests to client after staggered {} ms.",
                             local_chunk.len(),
                             delay_duration_ms,
                         );
-                        (submit_and_wait_txn_requests(&local_client, &local_chunk), delay_duration_ms)
+                        (
+                            submit_and_wait_txn_requests(&local_client, local_chunk, submit_rate),
+                            delay_duration_ms,
+                        )
                     },
                 )
             })
@@ -298,8 +316,10 @@ impl Benchmarker {
         &mut self,
         txn_reqs: &[SubmitTransactionRequest],
         senders: &mut [AccountData],
+        submit_rate: Option<u64>,
     ) -> (usize, usize, u128, u128) {
-        let (num_txns_accepted, submit_duration_ms) = self.submit_txns(txn_reqs);
+        let rate = submit_rate.unwrap_or(self.submit_rate);
+        let (num_txns_accepted, submit_duration_ms) = self.submit_txns(txn_reqs, rate);
         let (sync_sequence_numbers, wait_duration_ms) = self.wait_txns(senders);
         let (num_committed, _) = self.check_txn_results(senders, &sync_sequence_numbers);
         (
@@ -339,10 +359,10 @@ impl Benchmarker {
         txn_reqs: &[SubmitTransactionRequest],
         senders: &mut [AccountData],
     ) -> (f64, f64) {
-        let (_, num_committed, submit_duration_ms, wait_duration_ms) =
-            self.submit_and_wait_txn_committed(txn_reqs, senders);
+        let (num_accepted, num_committed, submit_duration_ms, wait_duration_ms) =
+            self.submit_and_wait_txn_committed(txn_reqs, senders, None);
         let request_throughput =
-            Self::calculate_throughput(txn_reqs.len(), submit_duration_ms, "REQ");
+            Self::calculate_throughput(num_accepted, submit_duration_ms, "REQ");
         let running_duration_ms = submit_duration_ms + wait_duration_ms;
         let txn_throughput = Self::calculate_throughput(num_committed, running_duration_ms, "TXN");
 

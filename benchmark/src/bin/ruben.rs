@@ -52,7 +52,7 @@ fn test_liveness(
             accounts,
             num_rounds,
         );
-        bm.submit_and_wait_txn_committed(&repeated_tx_reqs, accounts);
+        bm.submit_and_wait_txn_committed(&repeated_tx_reqs, accounts, None);
     }
 }
 
@@ -111,8 +111,9 @@ fn create_ac_clients(
 pub(crate) fn create_benchmarker_from_opt(args: &Opt) -> Benchmarker {
     // Create AdmissionControlClient instances.
     let clients = create_ac_clients(args.num_clients, &args.validator_addresses);
+    let pattern = args.parse_submit_pattern();
     // Ready to instantiate Benchmarker.
-    Benchmarker::new(clients, args.stagger_range_ms)
+    Benchmarker::new(clients, args.stagger_range_ms, pattern)
 }
 
 /// Benchmarker is not a long-lived job, so starting a server and expecting it to be polled
@@ -199,6 +200,7 @@ mod tests {
                 stagger_range_ms: 1,
                 num_rounds: 4,
                 num_epochs: 2,
+                const_rate: None,
                 executable: Executable::MeasureThroughput,
             };
             args.try_parse_validator_addresses();
