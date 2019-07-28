@@ -309,27 +309,6 @@ impl Benchmarker {
         (committed_txns_usize, uncommitted_txns_usize)
     }
 
-    /// Implement the general way to submit TXNs to Libra and then
-    /// wait for all accepted ones to become committed.
-    /// Return (#accepted TXNs, #committed TXNs, submit duration, wait duration).
-    pub fn submit_and_wait_txn_committed(
-        &mut self,
-        txn_reqs: &[SubmitTransactionRequest],
-        senders: &mut [AccountData],
-        submit_rate: Option<u64>,
-    ) -> (usize, usize, u128, u128) {
-        let rate = submit_rate.unwrap_or(self.submit_rate);
-        let (num_txns_accepted, submit_duration_ms) = self.submit_txns(txn_reqs, rate);
-        let (sync_sequence_numbers, wait_duration_ms) = self.wait_txns(senders);
-        let (num_committed, _) = self.check_txn_results(senders, &sync_sequence_numbers);
-        (
-            num_txns_accepted,
-            num_committed,
-            submit_duration_ms,
-            wait_duration_ms,
-        )
-    }
-
     /// Calcuate average committed transactions per second.
     fn calculate_throughput(num_txns: usize, duration_ms: u128, prefix: &str) -> f64 {
         assert!(duration_ms > 0);
@@ -341,7 +320,9 @@ impl Benchmarker {
         throughput
     }
 
-    /// Similar to submit_and_wait_txn_committed but with timing.
+    /// Implement the general way to submit TXNs to Libra and then
+    /// wait for all accepted ones to become committed.
+    /// Return (#accepted TXNs, #committed TXNs, request througnhput, TXN throughput).
     /// How given TXNs are played and how time durations (submission, commit and running)
     /// are defined are illustrated as follows:
     ///                t_submit                AC responds all requests
@@ -353,14 +334,17 @@ impl Benchmarker {
     /// Estimated TXN throughput from user perspective = #TXN / t_run.
     /// Estimated request throughput = #TXN / t_submit.
     /// Estimated TXN throughput internal to libra = #TXN / t_commit, not measured by this API.
-    /// Return request througnhput and TXN throughput.
-    pub fn measure_txn_throughput(
+    pub fn submit_and_wait_txn_committed(
         &mut self,
         txn_reqs: &[SubmitTransactionRequest],
         senders: &mut [AccountData],
-    ) -> (f64, f64) {
-        let (num_accepted, num_committed, submit_duration_ms, wait_duration_ms) =
-            self.submit_and_wait_txn_committed(txn_reqs, senders, None);
+        submit_rate: Option<u64>,
+    ) -> (usize, usize, f64, f64) {
+        let rate = submit_rate.unwrap_or(self.submit_rate);
+        let (num_accepted, submit_duration_ms) = self.submit_txns(txn_reqs, rate);
+        let (sync_sequence_numbers, wait_duration_ms) = self.wait_txns(senders);
+        let (num_committed, _) = self.check_txn_results(senders, &sync_sequence_numbers);
+
         let request_throughput =
             Self::calculate_throughput(num_accepted, submit_duration_ms, "REQ");
         let running_duration_ms = submit_duration_ms + wait_duration_ms;
@@ -371,7 +355,11 @@ impl Benchmarker {
         OP_COUNTER.set("running_duration_ms", running_duration_ms as usize);
         OP_COUNTER.set("request_throughput", request_throughput as usize);
         OP_COUNTER.set("txn_throughput", txn_throughput as usize);
-
-        (request_throughput, txn_throughput)
+        (
+            num_accepted,
+            num_committed,
+            request_throughput,
+            txn_throughput,
+        )
     }
 }

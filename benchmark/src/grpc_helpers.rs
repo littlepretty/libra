@@ -29,7 +29,7 @@ use crate::{submit_pattern::ConstantRate, OP_COUNTER};
 /// Timeout duration for grpc call option.
 const GRPC_TIMEOUT_MS: u64 = 8_000;
 /// Duration to sleep between consecutive queries for accounts' sequence numbers.
-const QUERY_SEQUENCE_NUMBERS_INTERVAL_US: u64 = 100;
+const QUERY_SEQUENCE_NUMBERS_INTERVAL_MS: u64 = 10;
 /// Max number of iterations to wait (using accounts' sequence number) for submitted
 /// TXNs to become committed.
 pub const MAX_WAIT_COMMIT_ITERATIONS: u64 = 10_000;
@@ -259,8 +259,8 @@ pub fn sync_account_sequence_number(
         if finished.len() == senders.len() {
             break;
         }
-        thread::sleep(time::Duration::from_micros(
-            QUERY_SEQUENCE_NUMBERS_INTERVAL_US,
+        thread::sleep(time::Duration::from_millis(
+            QUERY_SEQUENCE_NUMBERS_INTERVAL_MS,
         ));
         num_iters += 1;
     }

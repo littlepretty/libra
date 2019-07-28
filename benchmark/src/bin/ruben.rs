@@ -5,7 +5,7 @@ use admission_control_proto::proto::{
     admission_control::SubmitTransactionRequest, admission_control_grpc::AdmissionControlClient,
 };
 use benchmark::{
-    ruben_opt::{Executable, Opt},
+    ruben_opt::{Executable, Opt, SearchMaxThroughput},
     txn_generator::{
         gen_accounts, gen_pairwise_transfer_txn_requests, gen_ring_transfer_txn_requests,
     },
@@ -16,7 +16,7 @@ use grpcio::{ChannelBuilder, EnvBuilder};
 use libra_wallet::wallet_library::WalletLibrary;
 use logger::{self, prelude::*};
 use metrics::metric_server::start_server;
-use std::sync::Arc;
+use std::{sync::Arc, thread, time};
 
 /// Helper method to generate repeated TXNs from a function object, which is soon to be
 /// replaced by generic struct that implements TxnGenerator trait.
@@ -79,13 +79,89 @@ pub(crate) fn measure_throughput(
             accounts,
             num_rounds,
         );
-        let txn_throughput = bm.measure_txn_throughput(&repeated_tx_reqs, accounts);
-        txn_throughput_seq.push(txn_throughput);
+        let (_, _, request_throughput, txn_throughput) =
+            bm.submit_and_wait_txn_committed(&repeated_tx_reqs, accounts, None);
+        txn_throughput_seq.push((request_throughput, txn_throughput));
     }
     info!(
         "{:?} epoch(s) of TXN throughput = {:?}",
         num_epochs, txn_throughput_seq
     );
+}
+
+/// Run benchmarker at constant submission rate for several epochs. Use the averaged result
+/// to check if Libra network is able to absorb TXNs at the submission speed.
+fn run_benchmarker_at_const_rate(
+    bm: &mut Benchmarker,
+    accounts: &mut [AccountData],
+    wallet: &WalletLibrary,
+    rate: u64,
+    num_rounds: u64,
+    num_epochs: u64,
+) -> (usize, usize, f64, f64) {
+    let (mut total_accepted, mut total_committed) = (0, 0);
+    let (mut avg_req_throughput, mut avg_txn_throughput) = (0.0f64, 0.0f64);
+    for _ in 0..num_epochs {
+        let txn_reqs = gen_txn_load(
+            &gen_pairwise_transfer_txn_requests,
+            wallet,
+            accounts,
+            num_rounds,
+        );
+        let (num_accepted, num_committed, req_throughput, txn_throughput) =
+            bm.submit_and_wait_txn_committed(&txn_reqs, accounts, Some(rate));
+        total_accepted += num_accepted;
+        total_committed += num_committed;
+        avg_req_throughput += req_throughput;
+        avg_txn_throughput += txn_throughput;
+    }
+    avg_req_throughput /= num_epochs as f64;
+    avg_txn_throughput /= num_epochs as f64;
+    (
+        total_accepted,
+        total_committed,
+        avg_req_throughput,
+        avg_txn_throughput,
+    )
+}
+
+/// Search the maximum throughput between range SEARCH_UPPER_BOUND * [1/10, 1].
+/// Also consider the runs that fails the check as sometimes request throughput is hard to meet.
+/// Return the request/TXN throughput pairs for success runs.
+fn linear_search_max_throughput(
+    bm: &mut Benchmarker,
+    accounts: &mut [AccountData],
+    wallet: &WalletLibrary,
+    search_args: &SearchMaxThroughput,
+    num_rounds: u64,
+    num_epochs: u64,
+) -> (f64, f64) {
+    let mut rate = search_args.lower_bound;
+    let mut repeat = 1;
+    let mut max_result = (0.0f64, 0.0f64);
+    while rate <= search_args.upper_bound {
+        repeat = std::cmp::min(repeat, num_rounds);
+        info!("Sending at constant rate {:?} TPS per client.", rate);
+        let (num_accepted, num_committed, req_throughput, txn_throughput) =
+            run_benchmarker_at_const_rate(bm, accounts, &wallet, rate, repeat, num_epochs);
+        if max_result.1 < txn_throughput {
+            max_result.0 = req_throughput;
+            max_result.1 = txn_throughput;
+        }
+        info!(
+            "#accepted = {}, #committed = {}, REQ/TXN throughput = {:.2}/{:.2}.",
+            num_accepted, num_committed, req_throughput, txn_throughput
+        );
+        // Cool down Libra for next run.
+        thread::sleep(time::Duration::from_secs(1));
+        rate += search_args.inc_step;
+        repeat += 1;
+    }
+    info!(
+        "Search result: max REQ/TXN throughput = {:?} TPS",
+        max_result
+    );
+    max_result
 }
 
 fn create_ac_client(conn_addr: &str) -> AdmissionControlClient {
@@ -157,6 +233,20 @@ fn main() {
                 args.num_rounds,
                 args.num_epochs,
             );
+        }
+        Executable::SearchMaxThroughput(search_args) => {
+            for _ in 0..search_args.num_searches {
+                let mut accounts = gen_accounts(&mut wallet, args.num_accounts);
+                bm.mint_accounts(&args.faucet_key_file_path, &accounts);
+                linear_search_max_throughput(
+                    &mut bm,
+                    &mut accounts,
+                    &wallet,
+                    &search_args,
+                    args.num_rounds,
+                    args.num_epochs,
+                );
+            }
         }
     };
 }

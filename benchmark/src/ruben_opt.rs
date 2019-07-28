@@ -1,7 +1,6 @@
 // Copyright (c) The Libra Core Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-use clap::arg_enum;
 use config::config::NodeConfig;
 use failure::prelude::*;
 use logger::prelude::*;
@@ -9,12 +8,34 @@ use regex::Regex;
 use std::{fs, net::IpAddr, path::PathBuf, str::FromStr};
 use structopt::StructOpt;
 
-arg_enum! {
-    #[derive(Debug)]
-    pub enum Executable {
-        TestLiveness,
-        MeasureThroughput,
-    }
+#[derive(Debug, StructOpt)]
+#[structopt(name = "executable")]
+pub enum Executable {
+    /// Submit TXNs to test if Libra is alive.
+    #[structopt(name = "testliveness")]
+    TestLiveness,
+    /// Submit TXNs and measure client throughput.
+    #[structopt(name = "measurethroughput")]
+    MeasureThroughput,
+    /// Linear search max throughput with stairwise submission rate.
+    #[structopt(name = "searchmaxthroughput")]
+    SearchMaxThroughput(SearchMaxThroughput),
+}
+
+#[derive(Debug, StructOpt)]
+pub struct SearchMaxThroughput {
+    /// Upper bound value of submission rate for each client.
+    #[structopt(short = "u", long = "upper_bound", default_value = "100")]
+    pub upper_bound: u64,
+    /// Upper bound value of submission rate for each client.
+    #[structopt(short = "l", long = "lower_bound", default_value = "10")]
+    pub lower_bound: u64,
+    /// Increase step of submission rate for each client.
+    #[structopt(short = "i", long = "inc_step", default_value = "10")]
+    pub inc_step: u64,
+    /// How many times to repeat the same linear search. Each time with new accounts/TXNs.
+    #[structopt(short = "s", long = "num_searches", default_value = "10")]
+    pub num_searches: u64,
 }
 
 /// CLI options for RuBen.
@@ -85,14 +106,8 @@ pub struct Opt {
     /// Submit constant number of TXN requests per second; otherwise TXNs are flood to Libra.
     #[structopt(short = "k", long = "const_rate")]
     pub const_rate: Option<u64>,
-    /// Supported application of Benchmarker: `TestLiveness` or `MeasureThroughput`.
-    #[structopt(
-        short = "x",
-        long = "executable",
-        raw(possible_values = "&Executable::variants()"),
-        case_insensitive = true,
-        default_value = "MeasureThroughput"
-    )]
+    /// Supported applications of Benchmark library.
+    #[structopt(subcommand)]
     pub executable: Executable,
 }
 
@@ -158,6 +173,7 @@ impl Opt {
         if args.num_clients == 0 {
             args.num_clients = args.validator_addresses.len();
         }
+        args.check_linear_search_args();
         args
     }
 
@@ -172,6 +188,14 @@ impl Opt {
 
     pub fn parse_submit_pattern(&self) -> u64 {
         self.const_rate.unwrap_or(std::u64::MAX)
+    }
+
+    fn check_linear_search_args(&self) {
+        if let Executable::SearchMaxThroughput(sub_args) = &self.executable {
+            assert!(sub_args.lower_bound > 0);
+            assert!(sub_args.inc_step > 0);
+            assert!(sub_args.lower_bound < sub_args.upper_bound);
+        }
     }
 }
 
