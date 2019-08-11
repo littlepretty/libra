@@ -64,6 +64,22 @@ pub fn try_start_metrics_server(args: &RubenOpt) {
     }
 }
 
+/// Generate a group of new accounts, and mint them using Benchmarker before returning them.
+pub fn gen_and_mint_accounts<T: LoadGenerator + ?Sized>(
+    bm: &mut Benchmarker,
+    txn_generator: &mut T,
+    faucet_account: &mut AccountData,
+    num_accounts: u64,
+) -> Vec<AccountData> {
+    // Generate testing accounts.
+    let mut accounts: Vec<AccountData> = txn_generator.gen_accounts(num_accounts);
+    bm.register_accounts(&accounts);
+    // Mint generated accounts
+    let mint_txns = txn_generator.gen_setup_requests(faucet_account, &mut accounts);
+    bm.mint_accounts(&mint_txns, faucet_account);
+    accounts
+}
+
 /// Play given TXNs with Benchmarker for several epochs and measure burst throughput,
 /// e.g., the average committed txns per second. Since time is counted from submission
 /// until all TXNs are committed, this measurement is in a sense the user-side throughput.

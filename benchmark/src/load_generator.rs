@@ -181,6 +181,17 @@ pub fn gen_get_txn_by_sequnece_number_request(
     Request::ReadRequest(req.into_proto())
 }
 
+pub fn gen_get_txns_request(start_version: u64, limit: u64) -> Request {
+    let req_item = RequestItem::GetTransactions {
+        start_version,
+        limit,
+        fetch_events: false,
+    };
+    let request_items = vec![req_item];
+    let req = UpdateToLatestLedgerRequest::new(0, request_items);
+    Request::ReadRequest(req.into_proto())
+}
+
 /// -------------------------------------------------------------------------------- ///
 ///  Two LoadGenerator examples: circular transfer TXNs and pairwise transfer TXNs.  ///
 /// -------------------------------------------------------------------------------- ///

@@ -81,6 +81,10 @@ impl Benchmarker {
         }
     }
 
+    pub fn num_ac_clients(&self) -> usize {
+        self.clients.len()
+    }
+
     /// -------------------------------------------------------------------- ///
     ///  Benchmark setup: Load faucet account and minting APIs and helpers.  ///
     /// -------------------------------------------------------------------- ///
